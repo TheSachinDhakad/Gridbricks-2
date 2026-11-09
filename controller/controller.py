@@ -23,7 +23,7 @@ from .configtools import AGENT_DIMS, changed_dims, describe_diff, dist, step_tow
 from .experiments import DIMS, ExperimentEngine
 from .features import NCELL, Cohort, Vocab, cohort_index
 from .governance import Policy, inflight, may_submit
-from .incidents import check_spike, flag_baseline, proven_prompts, window_counts
+from .incidents import check_spike, flag_baseline, prompt_record, proven_prompts, window_counts
 from .schedule import build_partition, hour_weights_for, learn_schedule, partition_size
 from .simclient import ApiError, Sim
 from .stats import poisson_sf, ratio_test
@@ -198,6 +198,8 @@ class Controller:
                                       ev.get("approval_id"), self._ev_minute(ev), ev["ts"])
             if ev["actor"] == "supervisor":
                 dims = ev.get("changed_dims") or []
+                if "prompt_version" in dims:
+                    self.store.put(f"validate_prompt:{wid}", ev["version"])
                 for d in dims:
                     self.store.pin(wid, d, ev["version"], f"supervisor edit v{ev['version']} at {ev['ts']}")
                 stale = [p["proposal_id"] for p in inflight(self.store, wid)]
@@ -316,6 +318,7 @@ class Controller:
                         self.store.alert("ticket", f"did_bad:{t['did']}", f"{wid}: {t['summary']}", wid,
                                          "Controller rotates the number out automatically where policy allows; "
                                          "otherwise a protective approval is queued. Check carrier spam status.")
+                self._supervisor_prompt_check(wid, cur, st)
                 self._hallucination_step(wid, cur, st)
             if on_the_hour and dialling or self._routine_due(wid):
                 guard = self._guardrail(wid, day) if on_the_hour else (self.store.get(f"guard:{wid}") or {})
@@ -856,6 +859,22 @@ class Controller:
             spike = check_spike(agg, prompt, since, self.now, b0)
             if not spike:
                 return
+            rec_c, rec_f = prompt_record(agg, prompt, spike["window_start_minute"])
+            if rec_c >= S.PROVEN_PROMPT_CONN and rec_f / rec_c <= 1.5 * b0:
+                # A prompt with a long clean record that hasn't changed is not a plausible cause; swapping it
+                # for an unproven one (possibly a "strict" script that kills engagement) would be acting on
+                # a statistical fluke. Humans investigate (detector drift? traffic mix?) — we don't touch it.
+                if (self.store.get(f"flag_ticket:{wid}") or -10**9) < self.now - 1440:
+                    self.store.put(f"flag_ticket:{wid}", self.now)
+                    self.store.decide(wid, "flag_rate_elevated", f"QA flags on long-standing prompt {prompt} at "
+                                      f"{spike['flag_rate']:.1%} vs {b0:.1%} ({spike['flagged']}/{spike['connected']}, "
+                                      f"p={spike['p_value']:.1e}) but it has {rec_c} clean calls of history and did "
+                                      "not change — not swapping prompts on this; ticket raised",
+                                      {**spike, "record_connected": rec_c, "record_flag_rate": round(rec_f / rec_c, 4)})
+                    self.store.alert("ticket", "flag_rate_elevated", f"{wid}: QA flag rate {spike['flag_rate']:.1%} "
+                                     f"on unchanged prompt {prompt}", wid, "Check the QA detector and traffic mix; "
+                                     "the controller does not change a proven prompt on flags alone.")
+                return
             iid = self.store.open_incident(wid, "hallucination", {"spike": spike, "prompt": prompt, "tried": [],
                                                                   "credits": 0})
             self.store.decide(wid, "incident_opened", f"hallucination spike on {prompt}: {spike['flagged']}/"
@@ -923,6 +942,50 @@ class Controller:
                     d["tried"].append(fix)
                     self.store.update_incident(inc["id"], status="open", detail=d)
                     self.store.decide(wid, "incident_reopened", f"fix {fix} still flags {fl/cn:.1%}; trying another", d)
+
+    def _supervisor_prompt_check(self, wid: str, c: dict, st: dict):
+        """A supervisor switched to a prompt we have no production record of: spend 5 credits on a
+        validation run now rather than wait a day or more for QA flags to accumulate on real customers."""
+        if self.store.get(f"validate_prompt:{wid}") is None:
+            return
+        self.store.put(f"validate_prompt:{wid}", None)
+        prompt = c["config"]["prompt_version"]
+        b0 = self.store.get(f"b0:{wid}") or 0.015
+        if any(p["prompt_version"] == prompt for p in proven_prompts(self.aggs[wid], b0, "")):
+            return
+        if any(i["kind"] == "hallucination" for i in self.store.incidents(wid, open_only=True)):
+            return
+        n = S.VALIDATION_N_SUPERVISOR
+        if st.get("credits_remaining", 0) < 30 + n / 100:
+            self.store.decide(wid, "prompt_check_skipped", f"supervisor prompt {prompt}: not validating, credits "
+                              f"{st.get('credits_remaining')} reserved for incidents")
+            return
+        try:
+            v = self.sim.validate(wid, prompt, n)
+        except ApiError as e:
+            self.store.decide(wid, "prompt_check_failed", f"validation of {prompt} failed: {e.code}")
+            return
+        bar = self.pol[wid].min_validation + S.VALIDATION_MARGIN
+        ok = v["pass_rate"] >= bar
+        self.store.decide(wid, "prompt_check", f"supervisor switched to {prompt} (no production record here): "
+                          f"validation pass rate {v['pass_rate']:.3f} on n={n} vs our bar {bar:.3f} → "
+                          f"{'fine, monitoring production flags' if ok else 'treating as a hallucination incident'}",
+                          {"validation": v, "bar": bar})
+        if ok:
+            return
+        cn, en, fl = window_counts(self.aggs[wid], prompt, self._prompt_since(wid, prompt), self.now)
+        spike = {"window": "validation", "prompt": prompt, "connected": n, "flagged": v["failures"],
+                 "flag_rate": round(1 - v["pass_rate"], 4), "baseline_rate": round(b0, 4),
+                 "p_value": poisson_sf(v["failures"], n * (1 - bar)), "window_start_minute": self._prompt_since(wid, prompt),
+                 "production_so_far": {"connected": cn, "flagged": fl}, "validation_run_id": v["validation_run_id"]}
+        iid = self.store.open_incident(wid, "hallucination", {"spike": spike, "prompt": prompt, "tried": [prompt],
+                                                              "credits": n / 100})
+        self.store.decide(wid, "incident_opened", f"prompt {prompt} failed our safety bar in validation "
+                          f"({v['failures']}/{n} failures); opening a hallucination incident before customers "
+                          "accumulate exposure", spike, subject=f"incident:{iid}")
+        self.store.alert("page", "hallucination", f"{wid}: supervisor prompt {prompt} failed validation "
+                         f"({v['pass_rate']:.3f} < {bar:.3f})", wid, "Controller is proposing a rollback to the last "
+                         "proven prompt; check `python -m controller view --workflow " + wid + "`.")
 
     def _prompt_since(self, wid, prompt) -> int:
         """When the current prompt went live; the business default counts as 'always'."""
@@ -1007,11 +1070,15 @@ class Controller:
         new["prompt_version"] = d["fix"]["prompt_version"]
         sp, v = d["spike"], d["fix"]["validation"]
         cn, en, fl = window_counts(self.aggs[wid], cur["prompt_version"], sp["window_start_minute"], self.now)
+        if sp.get("window") == "validation":
+            why = (f"it failed safety validation ({sp['flagged']}/{sp['connected']} synthetic conversations, "
+                   f"{sp['flag_rate']:.1%}); live QA flags so far {fl}/{cn}")
+        else:
+            why = f"hallucination flags {fl}/{cn} ({fl / max(cn, 1):.1%}) vs {sp['baseline_rate']:.1%} normal"
         extra = {"evidence": {"validation_run_id": v["validation_run_id"]},
                  "impact_score": 1.0,
-                 "change_summary": f"[incident] Roll prompt {cur['prompt_version']}→{new['prompt_version']}: "
-                                   f"hallucination flags {fl}/{cn} ({fl / max(cn, 1):.1%}) vs {sp['baseline_rate']:.1%} normal",
-                 "rationale": (f"Detected a hallucination spike on {cur['prompt_version']} (p={sp['p_value']:.1e}). "
+                 "change_summary": f"[incident] Roll prompt {cur['prompt_version']}→{new['prompt_version']}: {why}",
+                 "rationale": (f"{cur['prompt_version']} is unsafe: {why}. "
                                f"{new['prompt_version']} is chosen because it has a {d['fix'].get('source')} in this "
                                f"workflow (flag rate {d['fix'].get('flag_rate', 'n/a')}, engagement "
                                f"{d['fix'].get('engagement', 'n/a')}) and passed validation at "

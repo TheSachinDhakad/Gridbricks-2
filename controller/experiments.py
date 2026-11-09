@@ -11,7 +11,8 @@ Design (SUBMISSION.md §5):
 * Winner: one-sided z ≥ 2.5 globally / 3.0 within a segment, ≥250 connected per arm, lift ≥ 3%,
   and the guardrail (pickup) not significantly breached. Harm: z ≤ −2 with ≥120 connected → stop.
 * After promotion a 15% control holdout keeps measuring; the winner is rolled back when its lift
-  over the last ~24h is significantly below control or significantly below its lift at promotion.
+  over the last ~2 days is significantly below control (z ≤ −1.645), or below 0 and far below the
+  lower bound of its lift at promotion (z ≤ −3).
 """
 from __future__ import annotations
 
@@ -183,7 +184,11 @@ class ExperimentEngine:
                     elif sst is None and gst in ("explore", "dropped"):
                         if (min(r.n1, r.n0) >= S.MIN_CONN_DECIDE and r.z >= S.Z_WIN_SEGMENT
                                 and r.lift >= S.MIN_LIFT and guard_ok(gd, gz)):
-                            seg_cands.setdefault(sname, []).append((r.bound(-1.645), o, r, ev, feat))
+                            rr = stats(si, oi, recent)[0]
+                            if min(rr.n1, rr.n0) >= S.MIN_CONN_HARM and rr.lift < S.MIN_LIFT / 2:
+                                continue  # not winning any more (see the global rule)
+                            seg_cands.setdefault(sname, []).append((r.bound(-1.645), o, r,
+                                                                    {**ev, "recent": rr.brief()}, feat))
                     elif sst == "winner":
                         rr = stats(si, oi, recent)[0]
                         t = self._decay_check(dim, sname, o, arms[(dim, sname, o)], rr, ev)
@@ -209,8 +214,11 @@ class ExperimentEngine:
         if not promo or min(rr.n0, rr.n1) < S.DECAY_MIN_CONN:
             return None
         L, se = promo["log_ratio"], promo["se"]
-        pr = Ratio(0, 0, 0, 0, L * L * L / (L * L + se * se), se)  # shrink: winner's curse inflates L
+        # A promotion happens at the first crossing of the bar, so its estimate is inflated (winner's
+        # curse). Reference the lower 90% bound, not the point estimate, for the secondary trigger.
+        pr = Ratio(0, 0, 0, 0, L - 1.645 * se, se)
         zc = z_change(rr, pr)
+        # Primary trigger asks the decision's real question: is the winner worse than control *now*?
         if rr.z <= S.DECAY_Z_RECENT or (rr.lift < 0 and zc <= S.DECAY_Z_CHANGE):
             ev = {**ev, "recent": rr.brief(), "lift_at_promotion": round(math.exp(promo["log_ratio"]) - 1, 4),
                   "z_change": round(zc, 2)}

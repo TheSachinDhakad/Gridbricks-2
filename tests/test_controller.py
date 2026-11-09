@@ -208,7 +208,7 @@ def test_experiment_promotes_clear_winner_and_drops_clear_loser(tmp_path):
     states = {(t["option"], t["state"]) for t in tr}
     assert ("W2", "winner") in states and ("W3", "dropped") in states
     alloc = e.allocation("welcome_message", e.statuses("welcome_message", None, None))
-    assert alloc == {"W2": 1 - S.HOLDOUT, "W1": S.HOLDOUT}
+    assert alloc == {"W2": round(1 - S.HOLDOUT, 4), "W1": S.HOLDOUT}
 
 
 def test_experiment_does_not_promote_noise(tmp_path):

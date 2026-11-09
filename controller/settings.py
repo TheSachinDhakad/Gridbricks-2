@@ -13,7 +13,9 @@ SNAPSHOT_EVERY_MIN = 6 * 60   # aggregate snapshot cadence (bounds replay after 
 # --------------------------------------------------------------------------- experiments (welcome × voice)
 EXPLORE_TOTAL = 0.40          # at most this much of a cohort's traffic goes to unproven challengers
 EXPLORE_PER_ARM_MAX = 0.15    # ...and at most this much to any single challenger
-HOLDOUT = 0.15                # control share kept after a winner is promoted, to watch for decay
+HOLDOUT = 0.20                # control share kept after a winner is promoted: ~215 connected/day on a dev-sized
+#                               workflow; scripts/calibrate.py: 92% of decays caught ~1.8 days after the winner
+#                               falls below control, 2.4% false rollbacks (0.15 → 88%; 0.25 → 93%)
 MIN_CONN_DECIDE = 300         # connected calls per arm (and control) before a winner can be declared
 MIN_CONN_HARM = 200           # ...before an arm can be stopped for harm
 Z_WIN_GLOBAL = 3.0            # one-sided, hourly peeks: 1.3% false winners per arm (scripts/calibrate.py)
@@ -24,8 +26,8 @@ Z_GUARDRAIL = -3.0            # W/V can't plausibly move pickup, so only a very 
 GUARD_PRESSURE_FRACTION = 0.5 # guardrail KPI within half of its allowed drop → stop arms that hurt it
 FUTILITY_UPPER = 0.02         # drop an arm when even its optimistic bound is below +2%
 FUTILITY_MIN_CONN = 3 * MIN_CONN_DECIDE
-DECAY_Z_CHANGE = -2.5         # winner's recent lift significantly below its (shrunk) lift at promotion...
-DECAY_Z_RECENT = -2.0         # ...or significantly below control outright → roll back
+DECAY_Z_CHANGE = -3.0         # secondary: recent lift far below the lower 90% bound of the promotion lift
+DECAY_Z_RECENT = -1.645       # primary: the winner is now worse than control (keeping or reverting cost the same)
 DECAY_MIN_CONN = 200          # control connected calls needed in the recent window to judge decay
 SEGMENT_MIN_SHARE = 0.03      # segments thinner than this aren't tested on their own
 MAX_COHORTS = 20              # simulator contract
@@ -55,11 +57,14 @@ SCHED_MAX_VALUES = 6
 HALLUC_MIN_CONN = 80
 HALLUC_P_ALARM = 1e-4         # Poisson tail vs. the workflow's historical flag rate
 HALLUC_P_ALARM_NEW_PROMPT = 1e-3
-HALLUC_MIN_RATIO = 2.0
+HALLUC_MIN_RATIO = 1.5        # a 'persuasive' prompt can hallucinate 4× more yet only double the QA flag rate
 HALLUC_WINDOW_MIN = 180
+PROVEN_PROMPT_CONN = 2000     # clean connected calls that make a prompt 'proven' (never auto-swapped on flags)
 HALLUC_VERIFY_CONN = 300      # connected calls on the fix before we call it verified
 VALIDATION_N = 300            # 3 credits; enough to separate ~1% from ~5% failure rates
-VALIDATION_MARGIN = 0.005     # our bar = policy min pass rate + margin (we're stricter than the approver)
+VALIDATION_MARGIN = 0.01      # our bar = policy min pass rate + 0.01: separates ~1% from ~2.75% failure
+#                               rates at n=500 (85% power, ~2% false alarm); the approver's bar does not
+VALIDATION_N_SUPERVISOR = 500 # proactive check of a prompt a supervisor introduces without a production record
 CREDIT_CAP_PER_INCIDENT = 15
 
 # --------------------------------------------------------------------------- governance
