@@ -1,0 +1,34 @@
+16:59:03 fault injected: died right after after_submit_post at sim 2027-01-04T10:00:00+05:30 minute 600; store: applied=4 submitting=1 
+16:59:04 fault injected: died right after after_apply_post at sim 2027-01-04T12:00:00+05:30 minute 720; store: applied=4 approved=1 pending=2 
+16:59:04 fault injected: died right after after_auto_post at sim 2027-01-05T09:15:00+05:30 minute 1995; store: applied=7 submitting=1 
+16:59:07 kill -9 #1 at sim 2027-01-07T19:15:00+05:30 minute 5475; pending proposals in store: 0
+16:59:10 kill -9 #2 at sim 2027-01-09T21:00:00+05:30 minute 8460; pending proposals in store: 0
+16:59:12 kill -9 #3 at sim 2027-01-11T20:00:00+05:30 minute 11280; pending proposals in store: 0
+16:59:12 final restart; running to completion
+16:59:14 finished at sim 2027-01-14T00:00:00+05:30 minute 14400
+PASS scenario finished at minute 14400
+PASS nw_renewal: 5 controller versions, no duplicates
+PASS nw_kyc: 2 controller versions, no duplicates
+PASS ks_cancel: 12 controller versions, no duplicates
+PASS store and simulator agree on 19 applied proposals
+PASS no proposals stuck mid-submission (0)
+PASS every approved-but-unapplied approval is explained in our store as withdrawn/stale/lapsed (0 explained, 0 unexplained)
+INFO controller restarts recorded in audit log: 6
+| workflow | conclusion rate | Δ | pickup | Δ | engagement | Δ | engagement gap captured | hallucinated calls (base) |
+|---|---|---|---|---|---|---|---|---|
+| ks_cancel | 0.376 | +59.4% | 0.255 | +40.8% | 0.502 | +7.3% | 37% | 90 (348) |
+| nw_kyc | 0.451 | +20.8% | 0.286 | +22.1% | 0.596 | -2.1% | -7% | 35 (29) |
+| nw_renewal | 0.483 | +11.6% | 0.296 | +13.0% | 0.544 | -1.8% | 5% | 54 (54) |
+| ALL | 0.427 | +29.3% | 0.275 | +25.5% | 0.536 | +0.7% | 22% | 179 (431) |
+
+## Changes applied by the controller
+19 applied — neutral: 11, beneficial: 8
+16:59:14 restart decisions in audit log:
+D0 10:00 -              restart                resumed from snapshot at D0 07:00 (chunk 0); replaying newer chunks
+D0 12:00 -              restart                resumed from snapshot at D0 07:00 (chunk 0); replaying newer chunks
+D1 09:15 -              restart                resumed from snapshot at D1 07:00 (chunk 51); replaying newer chunks
+D3 19:15 -              restart                resumed from snapshot at D3 19:00 (chunk 190); replaying newer chunks
+D5 21:00 -              restart                resumed from snapshot at D5 19:00 (chunk 288); replaying newer chunks
+D7 20:00 -              restart                resumed from snapshot at D7 19:00 (chunk 386); replaying newer chunks
+D0 10:00 nw_renewal     reconcile              proposal 9145cf-nw_renewal-routine-600-5 had reached the approver as apr_00001 before the crash
+D1 09:15 ks_cancel      reconcile              auto-apply 9145cf-ks_cancel-auto-1995-8 had landed as v6
