@@ -6,8 +6,10 @@ ratios over windows of hundreds of dials, never on single calls.
 
 States (persisted): healthy | unknown | bad
   * established DIDs (seen in history) start healthy; never-used DIDs start unknown
-  * bad      : ratio < 0.75 AND z ≤ −3 over the last 6 dialling hours (or the last ~36 for thin DIDs),
-               or an engagement guardrail breach
+  * bad      : ratio < 0.75 (0.60 for a number already in rotation) with z ≤ −4 / −3.5 / −3 over the last
+               2 / 6 / 36 dialling hours; a number in rotation must *also* have dropped vs. its own pickup
+               in the same hours on the previous two days (a flag is sudden; load is gradual).
+               Or: an engagement guardrail breach.
   * unknown→healthy : ≥250 dials and the lower 90% bound of the ratio ≥ 0.85
 Target allocation: healthy DIDs share traffic equally (spreading volume is what keeps a number off
 spam lists); up to two unknown DIDs get a small exploration share; bad DIDs get nothing.
@@ -57,8 +59,9 @@ def evaluate(store, wid: str, agg: WFAgg, day: int, hour: int, max_drop_eng: flo
     if short is None:
         return trans
     fast, fast_hours = _window(agg, day, hour, 2, with_hours=True)
-    windows = [("2h", fast, _same_hours_before(agg, fast_hours)),
-               ("6h", short, _same_hours_before(agg, short_hours)), ("36h", long_, None)]
+    # shorter windows are checked more often on less data, so they need stronger evidence
+    windows = [("2h", fast, _same_hours_before(agg, fast_hours), -4.0),
+               ("6h", short, _same_hours_before(agg, short_hours), -3.5), ("36h", long_, None, S.DID_BAD_Z)]
     healthy = [d for d in agg.D if states.get(d, {}).get("state") == "healthy"]
     for i, did in enumerate(agg.D):
         row = states.get(did, {})
@@ -76,7 +79,7 @@ def evaluate(store, wid: str, agg: WFAgg, day: int, hour: int, max_drop_eng: flo
                       if x != did and states.get(x, {}).get("state", "unknown") != "bad"]
         if not others:
             continue
-        for name, W, past in windows:
+        for name, W, past, zthr in windows:
             if W is None:
                 continue
             n, c = W[i, 0], W[i, 1]
@@ -84,7 +87,7 @@ def evaluate(store, wid: str, agg: WFAgg, day: int, hour: int, max_drop_eng: flo
             if n < S.DID_MIN_DIALS_BAD or on < S.DID_MIN_DIALS_BAD:
                 continue
             r = ratio_test(c, n, oc, on)
-            if r.ratio < bad_ratio and r.z <= S.DID_BAD_Z:
+            if r.ratio < bad_ratio and r.z <= zthr:
                 ev = {"window": name, "pickup": round(c / n, 4), "others_pickup": round(oc / on, 4),
                       "ratio": round(r.ratio, 3), "z": round(r.z, 2), "dials": int(n)}
                 if st == "healthy":

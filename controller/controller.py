@@ -480,7 +480,7 @@ class Controller:
                 partial = take_dims(cur, desired, auto_dims)
                 if changed_dims(cur, partial):
                     stepped = step_toward(cur, partial, pol.max_shift)
-                    if changed_dims(cur, stepped):
+                    if changed_dims(cur, stepped) and self._worth_it(wid, cur, stepped):
                         self._auto_apply(wid, version, cur, stepped, "protective" if protective else "routine")
                         return
         if busy:
@@ -493,11 +493,32 @@ class Controller:
         if not ok and purpose == "protective":
             ok, why = may_submit(pol, self.store, self.now, "routine")
             purpose = "routine" if ok else purpose
-        if not ok:
+        if not ok or not self._worth_it(wid, cur, desired):
             return
         self._submit(wid, version, cur, desired, purpose)
         if protective:
             self.store.put(f"protective:{wid}", None)
+
+    def _worth_it(self, wid: str, cur: dict, new: dict) -> bool:
+        """Never ask for (or auto-apply) a change our own dry run says hurts the primary KPI or the guardrail."""
+        dry = self._dry_run(wid, cur, new)["expected_relative_change"]
+        obj = self.meta[wid]["objective"]
+        primary = dry["engagement_rate" if obj["primary"] == "engagement_rate" else "pickup_rate"]
+        g = obj.get("guardrail") or {}
+        key, max_drop = next(iter(g.items())) if g else ("", 1.0)
+        base = self.store.get(f"baseline:{wid}") or {}
+        guard_rel = dry["pickup_rate" if key.startswith("pickup") else "engagement_rate"]
+        guard_abs = guard_rel * (base.get("pickup" if key.startswith("pickup") else "engagement") or 0.5)
+        if primary < -0.005 or guard_abs < -max_drop:
+            last = self.store.get(f"skip_logged:{wid}") or -10**9
+            if self.now - last >= 360:
+                self.store.decide(wid, "proposal_skipped", f"not proposing: our dry run expects primary "
+                                  f"{primary:+.1%}, guardrail {guard_abs:+.3f} — evidence disagrees with the rule "
+                                  "that triggered it; waiting for more data", {"expected": dry,
+                                                                              "dims": changed_dims(cur, new)})
+                self.store.put(f"skip_logged:{wid}", self.now)
+            return False
+        return True
 
     # ================================================================== proposal content
     def _new_pid(self, wid, purpose) -> str:
@@ -543,6 +564,22 @@ class Controller:
         nn = ["default"] + [c["id"] for c in new.get("cohorts") or []]
         num = den = 0.0
         per_dim_evidence = {}
+        sf = self._split_features(wid)
+        new_where = {c["id"]: c.get("where") or {} for c in new.get("cohorts") or []}
+        cache: dict[tuple, dict] = {}
+        all_cells = np.ones(NCELL, dtype=bool)
+
+        def multipliers(dim: str, cohort: str) -> tuple[str, dict]:
+            # estimate at the level the decision is made: the cohort's segment for this dim if it has
+            # one, otherwise the whole workflow (per-cohort data is too thin and drifts out of date)
+            f = sf.get(dim)
+            vals = new_where.get(cohort, {}).get(f) if f else None
+            key = (dim, f"{f}={vals[0]}") if vals and len(vals) == 1 else (dim, "all")
+            if key not in cache:
+                mask = self.vocab.mask({f: vals}) if key[1] != "all" else all_cells
+                cache[key] = eng.relative_multipliers(dim, mask, day)
+            return key[1], cache[key]
+
         for i, j in {(int(a), int(b)) for a, b in zip(ic, inew)}:
             sel = (ic == i) & (inew == j)
             w = float(active[sel].sum())
@@ -553,11 +590,11 @@ class Controller:
                 a_new, a_cur = dist(new, nn[j], dim), dist(cur, nc[i], dim)
                 if tv(a_new, a_cur) < 1e-6:
                     continue
-                mult = eng.relative_multipliers(dim, sel)
+                seg, mult = multipliers(dim, nn[j])
                 rn = sum(p * mult[o]["mult"] for o, p in a_new.items())
                 rc = sum(p * mult[o]["mult"] for o, p in a_cur.items())
                 ratio *= rn / rc
-                per_dim_evidence.setdefault(dim, {})[nn[j]] = {o: mult[o] for o in sorted(set(a_new) | set(a_cur))}
+                per_dim_evidence.setdefault(dim, {})[seg] = {o: mult[o] for o in sorted(mult)}
             num += w * ratio
             den += w
         eng_rel = num / den - 1 if den else 0.0

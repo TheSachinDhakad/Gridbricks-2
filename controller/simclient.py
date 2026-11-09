@@ -25,9 +25,9 @@ class ApiError(Exception):
 
 
 class Sim:
-    def __init__(self, url: str, timeout: float = 600.0):
+    def __init__(self, url: str, timeout: float = 600.0, client: httpx.Client | None = None):
         self.url = url.rstrip("/")
-        self.c = httpx.Client(base_url=self.url, timeout=httpx.Timeout(timeout, connect=10.0))
+        self.c = client or httpx.Client(base_url=self.url, timeout=httpx.Timeout(timeout, connect=10.0))
         self.calls = 0
 
     def wait_ready(self, max_wait_s: float = 1800):

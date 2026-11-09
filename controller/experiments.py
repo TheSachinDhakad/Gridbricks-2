@@ -118,9 +118,16 @@ class ExperimentEngine:
                 ev = {"window": "co-present days, all data", **r.brief(), "pickup_diff": round(gd, 4),
                       "pickup_z": round(gz, 2)}
                 if st == "explore":
+                    rr = stats(0, oi, recent)[0]
                     if min(r.n1, r.n0) >= S.MIN_CONN_HARM and r.z <= S.Z_HARM:
                         transitions.append(self._set(dim, "all", o, "dropped", "harm", ev,
                                                      f"stop {o}: engagement {r.lift:+.1%} vs {ctrl} (z={r.z:.1f})"))
+                    elif min(rr.n1, rr.n0) >= S.MIN_CONN_HARM and rr.z <= S.Z_HARM:
+                        transitions.append(self._set(dim, "all", o, "dropped", "recent_harm",
+                                                     {**ev, "recent": rr.brief()},
+                                                     f"stop {o}: engagement {rr.lift:+.1%} vs {ctrl} over the last "
+                                                     f"~2 days (z={rr.z:.1f}) although {r.lift:+.1%} overall — it "
+                                                     "has stopped working"))
                     elif not guard_ok(gd, gz) and min(r.n1, r.n0) >= S.MIN_CONN_HARM:
                         transitions.append(self._set(dim, "all", o, "dropped", "guardrail", ev,
                                                      f"stop {o}: pickup {gd:+.3f} breaches guardrail"))
@@ -255,23 +262,32 @@ class ExperimentEngine:
         return {o: round(w, 4) for o, w in a.items() if w > 0}
 
     # ------------------------------------------------------------------ dry run support
-    def relative_multipliers(self, dim: str, mask: np.ndarray) -> dict[str, dict]:
-        """Shrunk engagement multiplier of each option vs control inside `mask`, from all co-present data."""
+    def relative_multipliers(self, dim: str, mask: np.ndarray, today: int | None = None) -> dict[str, dict]:
+        """Shrunk engagement multiplier of each option vs control inside `mask`.
+
+        Forecasts use the last ~2 days when there is enough of it (effects drift — that's what decay is),
+        otherwise all co-present data. Each estimate is shrunk toward 1 by its own uncertainty.
+        """
         opts = self.options(dim)
         ci = opts.index(self.control[dim])
         segs = [("x", mask)]
         pd_ = self._per_day(dim, segs)
+        recent = None if today is None else {d for d in pd_ if d >= today - 1}
         out = {}
         for oi, o in enumerate(opts):
             if oi == ci:
                 out[o] = {"mult": 1.0, "n": None}
                 continue
-            a, b = self._pair(pd_, 0, oi, ci)
+            a, b = self._pair(pd_, 0, oi, ci, recent)
+            window = "last 2 days"
+            if a[1] < 150 or b[1] < 150:
+                a, b = self._pair(pd_, 0, oi, ci)
+                window = "all co-present days"
             if a[1] < 30 or b[1] < 30:
-                out[o] = {"mult": 1.0, "n": int(a[1])}
+                out[o] = {"mult": 1.0, "n": int(a[1]), "window": "too little data — assumed no effect"}
                 continue
             r = ratio_test(a[2], a[1], b[2], b[1])
             k = r.log_ratio ** 2 / (r.log_ratio ** 2 + r.se ** 2)
             out[o] = {"mult": math.exp(r.log_ratio * k), "n": int(a[1]), "lift": round(r.lift, 4),
-                      "z": round(r.z, 2)}
+                      "z": round(r.z, 2), "window": window}
         return out
