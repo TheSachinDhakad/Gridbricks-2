@@ -2,3 +2,6 @@ runs/
 __pycache__/
 *.pyc
 .venv/
+.venv/
+state/
+.DS_Store
