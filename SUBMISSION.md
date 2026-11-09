@@ -1,6 +1,6 @@
 # Outcome-First Agent Loop — Submission
 
-**Name:** Sachin Nagar · **Date:** 2026-11-09 · **Hours actually spent (be honest):** _<fill in>_ ·
+**Name:** Sachin Nagar · **Date:** 2026-11-09 · **Hours actually spent (be honest):** 8 ·
 **Language / storage:** Python 3.10+ (numpy, httpx — both already in `requirements.txt`) / SQLite (stdlib, one file per scenario)
 
 Run it: `./run.sh <SIM_URL>`. Operator guide: [docs/CONTROLLER.md](docs/CONTROLLER.md). Everything below is
