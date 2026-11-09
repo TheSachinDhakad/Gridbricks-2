@@ -174,11 +174,64 @@ def why(store: Store, wid: str, at: int) -> str:
     return "\n".join(L)
 
 
+def customer(store: Store, wid: str, person_id: str, at: int) -> str:
+    """Compliance's question: why did this customer hear what they heard at time T?"""
+    from .configtools import dist
+    from .features import FEATURES, Vocab
+    snap = store.load_snapshot()
+    if not snap:
+        return "no snapshot yet"
+    agg, vocab = snap[2]["aggs"].get(wid), Vocab(snap[2]["vocab"])
+    try:
+        pnum = int(person_id[person_id.rindex(":p") + 2:])
+        cell = int(agg.person_cell[pnum])
+    except (ValueError, IndexError, AttributeError):
+        cell = -1
+    if cell < 0:
+        return f"{person_id}: not a lead we have seen in {wid}"
+    codes = vocab.cell_codes()
+    feats = {f: vocab.values[f][codes[f][cell]] for f in FEATURES}
+    v = store.one("SELECT * FROM config_versions WHERE workflow_id=? AND sim_minute <= ? AND config IS NOT NULL "
+                  "ORDER BY version DESC LIMIT 1", wid, at)
+    if v is None:
+        return "no config recorded at that time"
+    cfg = json.loads(v["config"])
+    cohort = next((c["id"] for c in cfg.get("cohorts") or []
+                   if all(feats.get(k) in vals for k, vals in (c.get("where") or {}).items())), "default")
+    L = [f"# {person_id} in {wid} at {fmt(at)}", "",
+         f"- features: {feats}", f"- cohort: **{cohort}** (first matching cohort of config v{v['version']})",
+         f"- config v{v['version']} set {fmt(v['sim_minute'])} by {v['actor']}"
+         + (f" via approval {v['approval_id']}" if v["approval_id"] else ""),
+         f"- welcome drawn from { {o: round(w, 3) for o, w in dist(cfg, cohort, 'welcome_message').items()} }",
+         f"- voice drawn from { {o: round(w, 3) for o, w in dist(cfg, cohort, 'voice').items()} }",
+         f"- caller ID drawn from { {o: round(w, 3) for o, w in dist(cfg, cohort, 'caller_id').items()} }",
+         f"- prompt {cfg.get('prompt_version')} (one per workflow)",
+         f"- call-hour weights for this cohort: {(cfg.get('schedule') or {}).get('hour_weights', {}).get(cohort) or 'none (uniform)'}",
+         "", "Each call samples welcome/voice/caller ID independently from these distributions; the variant actually "
+         "played is on the platform's call record. Why these distributions were live:"]
+    rows = store.q("SELECT * FROM config_versions WHERE workflow_id=? AND version <= ? ORDER BY version DESC",
+                   wid, v["version"])
+    for dim in ("welcome_message", "voice", "caller_id", "prompt_version", "schedule", "cohorts"):
+        src = next((r for r in rows if dim in json.loads(r["changed_dims"] or "[]")), None)
+        if src is None:
+            L.append(f"- **{dim}**: business default (never changed before {fmt(at)})")
+            continue
+        p = store.proposal(src["proposal_id"]) if src["proposal_id"] else None
+        who = (f"approval {src['approval_id']}" if src["approval_id"] else
+               "auto-apply within the signed policy" if src["actor"] == "controller_auto" else "client supervisor edit")
+        L.append(f"- **{dim}**: set in v{src['version']} at {fmt(src['sim_minute'])} by {who}"
+                 + (f" — {p['body'].get('change_summary')}" if p else ""))
+        if p and dim in ("welcome_message", "voice", "prompt_version"):
+            reasons = [ln for ln in str(p["body"].get("rationale")).splitlines() if ln.startswith(dim) or dim == "prompt_version"]
+            L += [f"    - {ln}" for ln in reasons[:4]]
+    return "\n".join(L)
+
+
 def health(store: Store) -> str:
     L = ["# Controller health", ""]
     rs = store.get("run_stats") or {}
-    for name in ("ingest_events_per_s", "ingest_lag_chunks", "decisions_per_day", "credits_remaining", "snapshot_s",
-                 "peak_rss_mb"):
+    for name in ("ingest_events_per_s", "ingest_lag_chunks", "wall_s_per_sim_day", "decisions_per_day",
+                 "credits_remaining", "snapshot_s", "peak_rss_mb"):
         r = store.one("SELECT AVG(value), MAX(value), COUNT(*), MAX(sim_minute) FROM metrics WHERE name=?", name)
         last = store.one("SELECT value FROM metrics WHERE name=? ORDER BY rowid DESC LIMIT 1", name)
         if r and r[2]:

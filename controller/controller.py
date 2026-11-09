@@ -250,6 +250,10 @@ class Controller:
             self.store.metric("ingest_lag_chunks", len(self.sim.chunks("events", self.last_chunk)))
             if self.now % 1440 == 0:
                 self._daily_metrics()
+                w = time.time()
+                if getattr(self, "_day_wall", None):
+                    self.store.metric("wall_s_per_sim_day", w - self._day_wall, {"day": self.now // 1440 - 1})
+                self._day_wall = w
             log.debug("%s ingested %d events", fmt_minute(self.now), n)
         self.finish()
 

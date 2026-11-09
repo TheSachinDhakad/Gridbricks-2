@@ -4,6 +4,7 @@
   python -m controller view   [--db state/<scenario>.db] [--workflow ID]
   python -m controller why    --workflow ID --at "D3 14:00" [--db ...]
   python -m controller health [--db ...]
+  python -m controller customer --workflow ID --person ID --at "D3 14:00" [--db ...]
   python -m controller audit  [--workflow ID] [--kind KIND] [--limit N] [--db ...]
 """
 from __future__ import annotations
@@ -78,13 +79,15 @@ def main(argv=None):
     r.add_argument("--url", required=True)
     r.add_argument("--state-dir", default="state")
     r.add_argument("--log-level", default="info")
-    for name in ("view", "why", "health", "audit"):
+    for name in ("view", "why", "health", "audit", "customer"):
         p = sub.add_parser(name)
         p.add_argument("--db")
         p.add_argument("--state-dir", default="state")
         p.add_argument("--workflow")
-        if name == "why":
+        if name in ("why", "customer"):
             p.add_argument("--at", required=True, help='e.g. "D3 14:00"')
+        if name == "customer":
+            p.add_argument("--person", required=True, help="person_id, e.g. nw_renewal:p0001234")
         if name == "audit":
             p.add_argument("--kind")
             p.add_argument("--limit", type=int, default=50)
@@ -98,6 +101,8 @@ def main(argv=None):
         print("\n\n".join(views.supervisor_view(store, w) for w in wfs))
     elif a.cmd == "why":
         print(views.why(store, a.workflow, views.parse_when(a.at)))
+    elif a.cmd == "customer":
+        print(views.customer(store, a.workflow, a.person, views.parse_when(a.at)))
     elif a.cmd == "health":
         print(views.health(store))
     elif a.cmd == "audit":

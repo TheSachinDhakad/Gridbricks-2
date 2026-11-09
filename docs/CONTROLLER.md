@@ -26,6 +26,7 @@ python -m controller view   --workflow nw_renewal            # the supervisor's 
 python -m controller why    --workflow ks_cancel --at "D3 14:00"   # why did X change, who approved, what next
 python -m controller audit  --workflow ks_cancel --kind 'incident%'  # raw decision log (SQL LIKE on kind)
 python -m controller health                                  # loop health + open alerts + proposal outcomes
+python -m controller customer --workflow nw_kyc --person nw_kyc:p0001234 --at "D3 14:00"  # auditor: why did this person hear that
 sqlite3 state/<scenario>.db 'select * from proposals'        # everything is plain SQL
 ```
 
