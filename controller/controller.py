@@ -9,6 +9,7 @@ import copy
 import datetime as dt
 import json
 import logging
+import os
 import resource
 import time
 import uuid
@@ -29,6 +30,17 @@ from .stats import poisson_sf, ratio_test
 from .store import Store
 
 log = logging.getLogger("controller")
+
+
+def fault(point: str):
+    """Crash-test hook: CONTROLLER_FAULT=<point> makes the process die right after that side effect,
+    before it is recorded — the most dangerous moment for idempotency. Fires once per state dir."""
+    want = os.environ.get("CONTROLLER_FAULT")
+    marker = os.environ.get("CONTROLLER_FAULT_MARKER")
+    if want == point and marker and not os.path.exists(marker):
+        open(marker, "w").write(point)
+        log.error("fault injection: dying right after %s", point)
+        os._exit(137)
 
 
 def fmt_minute(m: int) -> str:
@@ -704,6 +716,7 @@ class Controller:
         self.store.update_proposal(pid, submitted_minute=self.now)
         try:
             a = self.sim.request_approval(body)
+            fault("after_submit_post")
         except ApiError as e:
             if e.code == "duplicate_proposal_id":
                 self._reconcile()
@@ -735,6 +748,7 @@ class Controller:
                                           "diff": describe_diff(cur, new)}})
         try:
             r = self.sim.auto_apply(wid, body)
+            fault("after_auto_post")
         except ApiError as e:
             if e.code == "duplicate_proposal_id":
                 self._reconcile()
@@ -768,11 +782,23 @@ class Controller:
                     self.store.update_proposal(pid, status="approved", decided_minute=self.now)
                     self.store.decide(wid, "approval_approved", f"{a['approval_id']} approved at {a.get('decided_at')}"
                                       f"; applying (apply by {a.get('apply_by')})", a, proposal_id=pid)
+                cur = self._config(wid)
+                if p["purpose"] != "incident" and cur["version"] == p["base_version"] and \
+                        not self._worth_it(wid, cur["config"], p["body"]["proposed_config"]):
+                    # approval is permission, not obligation: the evidence moved against this change
+                    self.store.update_proposal(pid, status="withdrawn", reasons=["evidence changed after approval"])
+                    self.store.decide(wid, "approval_not_used", f"{a['approval_id']} approved but not applied: our "
+                                      "dry run now expects it to hurt; letting it lapse", a, proposal_id=pid)
+                    continue
                 self._apply(p, a)
             elif s == "applied":
                 hist = self.sim.config_history(wid)
-                v = next((h["version"] for h in hist if h["approval_id"] == a["approval_id"]), None)
-                self.store.update_proposal(pid, status="applied", applied_version=v)
+                v = next((h for h in hist if h["approval_id"] == a["approval_id"]), {})
+                self.store.update_proposal(pid, status="applied", applied_version=v.get("version"),
+                                           applied_minute=self.now)
+                self.store.decide(wid, "reconcile", f"{a['approval_id']} had been applied as v{v.get('version')} "
+                                  f"(at {v.get('applied_at')}) before a crash; recorded now", v, proposal_id=pid)
+                self._post_apply_incident_sync()
             else:
                 self.store.update_proposal(pid, status=s, decided_minute=self.now, reasons=a.get("reasons"))
                 self.store.decide(wid, f"approval_{s}", f"{a['approval_id']} {s}: {a.get('reasons') or ''}; "
@@ -784,6 +810,7 @@ class Controller:
         wid, pid = p["workflow_id"], p["proposal_id"]
         try:
             r = self.sim.apply(wid, a["approval_id"])
+            fault("after_apply_post")
         except ApiError as e:
             if e.code == "not_approved" and (e.detail or {}).get("status") == "applied":
                 self.store.update_proposal(pid, status="applied")

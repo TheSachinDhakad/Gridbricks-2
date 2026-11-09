@@ -7,6 +7,8 @@ Proposal lifecycle (our side; the simulator's states are a subset):
                     │             ├─► rejected ├─► lapsed   (not applied inside apply_window)
                     │             └─► expired  └─► stale    (base_version moved: supervisor edit)
                     └─► not_sent   (crash between intent and POST; re-planned from fresh data)
+    approved ──► withdrawn  (approval is permission, not obligation: evidence turned against it before
+                             we applied, so we let it lapse — recorded with the dry run that changed)
     auto:  planned ──► applied | refused (403)
 
 Expired, rejected, lapsed and stale proposals are never resubmitted as-is: the planner rebuilds the

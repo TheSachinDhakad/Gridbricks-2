@@ -25,6 +25,18 @@ until curl -sf "$URL/health" >/dev/null; do sleep 0.5; done
 say() { echo "$(date +%H:%M:%S) $*" | tee -a "$LOG"; }
 clock() { curl -s "$URL/sim/state" | "$PY" -c 'import json,sys; s=json.load(sys.stdin); print(s["ts"], "minute", s["sim_minute"])'; }
 
+# 1) deterministic faults at the most dangerous moments: right after a side effect, before it is recorded
+for point in after_submit_post after_apply_post after_auto_post; do
+  rm -f "$STATE/fault.marker"
+  CONTROLLER_FAULT="$point" CONTROLLER_FAULT_MARKER="$STATE/fault.marker" STATE_DIR="$STATE" PYTHON="$PY" \
+    ./run.sh "$URL" >> "runs/crash_controller_$NAME.log" 2>&1 || true
+  if [ -f "$STATE/fault.marker" ]; then
+    say "fault injected: died right after $point at sim $(clock); store: $(sqlite3 "$STATE/$NAME.db" "select status||'='||count(*) from proposals group by status" | tr '\n' ' ')"
+  else
+    say "fault point $point never reached (run finished)"
+  fi
+done
+# 2) random SIGKILLs
 for i in $(seq 1 "$KILLS"); do
   STATE_DIR="$STATE" PYTHON="$PY" ./run.sh "$URL" >> "runs/crash_controller_$NAME.log" 2>&1 &
   CTL=$!

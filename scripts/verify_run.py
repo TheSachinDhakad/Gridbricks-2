@@ -6,7 +6,7 @@ Exits non-zero if any of these fail:
   * the scenario finished
   * no proposal_id appears twice in any workflow's config history (no double apply)
   * every version the simulator attributes to us is recorded as applied in our store, and vice versa
-  * no approval the simulator approved was left unapplied while still inside its apply window
+  * every approval left unapplied is explained in our store (withdrawn / stale base / lapsed)
   * nothing in our store is stuck in 'planned' / 'submitting'
 """
 import argparse
@@ -46,7 +46,10 @@ def main():
     stuck = s.proposals(statuses=("planned", "submitting"))
     check(not stuck, f"no proposals stuck mid-submission ({len(stuck)})")
     approved = c.get("/approvals", params={"status": "approved"}).json()
-    check(not approved, f"no approved-but-unapplied approvals left ({len(approved)})")
+    withdrawn = {p["approval_id"] for p in s.proposals(statuses=("withdrawn", "stale", "lapsed"))}
+    unexplained = [x["approval_id"] for x in approved if x["approval_id"] not in withdrawn]
+    check(not unexplained, f"every approved-but-unapplied approval is explained in our store as withdrawn/stale/"
+                           f"lapsed ({len(approved) - len(unexplained)} explained, {len(unexplained)} unexplained)")
     restarts = s.one("SELECT COUNT(*) FROM decisions WHERE kind='restart'")[0]
     print(f"INFO controller restarts recorded in audit log: {restarts}")
     sys.exit(0 if ok else 1)

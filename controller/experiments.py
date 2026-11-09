@@ -133,7 +133,11 @@ class ExperimentEngine:
                                                      f"stop {o}: pickup {gd:+.3f} breaches guardrail"))
                     elif (min(r.n1, r.n0) >= S.MIN_CONN_DECIDE and r.z >= S.Z_WIN_GLOBAL
                           and r.lift >= S.MIN_LIFT and guard_ok(gd, gz)):
-                        cands.append((r.bound(-1.645), o, r, ev))
+                        # a winner must still be winning: effects drift, and promoting on a cumulative
+                        # estimate whose recent half has gone flat is exactly how decaying variants get shipped
+                        if min(rr.n1, rr.n0) >= S.MIN_CONN_HARM and rr.lift < S.MIN_LIFT / 2:
+                            continue
+                        cands.append((r.bound(-1.645), o, r, {**ev, "recent": rr.brief()}))
                     elif pressure and min(r.n1, r.n0) >= S.MIN_CONN_HARM and r.lift < 0:
                         transitions.append(self._set(dim, "all", o, "dropped", "guardrail_pressure", ev,
                                                      f"stop {o}: engagement {r.lift:+.1%} while the workflow's "
