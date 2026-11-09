@@ -108,6 +108,15 @@ class ExperimentEngine:
             def guard_ok(gd, gz):
                 return not (-gd > self.max_drop and gz <= S.Z_GUARDRAIL)
 
+            def seg_promise(oi) -> bool:
+                """Keep exploring an arm that averages out to nothing if some segment loves it
+                (e.g. a voice that helps seniors and hurts the young)."""
+                for si in range(1, len(segs)):
+                    rs = stats(si, oi)[0]
+                    if min(rs.n1, rs.n0) >= S.MIN_CONN_HARM and rs.z >= 2.5 and rs.lift >= S.MIN_LIFT:
+                        return True
+                return False
+
             # ---- global
             cands = []
             have_winner = any(arms.get((dim, "all", o), {}).get("state") == "winner" for o in opts)
@@ -143,7 +152,8 @@ class ExperimentEngine:
                         transitions.append(self._set(dim, "all", o, "dropped", "guardrail_pressure", ev,
                                                      f"stop {o}: engagement {r.lift:+.1%} while the workflow's "
                                                      "engagement guardrail is under pressure"))
-                    elif r.n1 >= S.FUTILITY_MIN_CONN and r.bound(1.645) - 1 < S.FUTILITY_UPPER:
+                    elif (r.n1 >= S.FUTILITY_MIN_CONN and r.bound(1.645) - 1 < S.FUTILITY_UPPER
+                          and not seg_promise(oi)):
                         transitions.append(self._set(dim, "all", o, "dropped", "futile", ev,
                                                      f"stop {o}: no worthwhile lift (90% upper {r.bound(1.645)-1:+.1%})"))
                 elif st == "winner":
@@ -203,6 +213,15 @@ class ExperimentEngine:
                     continue
                 if not can_split(dim, feat):
                     continue
+                g = next((x for x in opts if arms.get((dim, "all", x), {}).get("state") == "winner"), None)
+                if g is not None and g != o:
+                    # inside the segment the incumbent is the global winner, not control: only take over
+                    # if this arm beats it there
+                    si = [n for n, _ in segs].index(sname)
+                    rg = stats(si, opts.index(g))[0]
+                    if rg.lift >= r.lift:
+                        continue
+                    ev["vs_global_winner"] = {"winner": g, "its_lift_here": round(rg.lift, 4)}
                 ev["promo"] = {"log_ratio": r.log_ratio, "se": r.se}
                 transitions.append(self._set(dim, sname, o, "winner", "segment_significant", ev,
                                              f"promote {o} for {sname}: engagement {r.lift:+.1%} vs {ctrl} (z={r.z:.1f})"))
